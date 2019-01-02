@@ -15,7 +15,7 @@ pub use self::common::LockResult;
 
 pub use self::locktype::LockType;
 
-pub use self::lock::Lock;
-pub use self::lock::LockBuilder;
-pub use self::lock::LockGuard;
-pub use self::lock::LockGuardMut;
+pub use self::lock::GLock;
+pub use self::lock::GLockBuilder;
+pub use self::lock::GLockGuard;
+pub use self::lock::GLockGuardMut;

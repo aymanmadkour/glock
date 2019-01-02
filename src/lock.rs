@@ -6,29 +6,29 @@ use self::super::locktype::*;
 use self::super::kernel::*;
 
 
-pub struct LockBuilder  {
+pub struct GLockBuilder {
     kernel: LockKernelRc,
 }
 
-impl LockBuilder {
+impl GLockBuilder {
 
-    pub fn new_root_builder() -> LockBuilder {
-        LockBuilder { kernel: LockKernelRc::new(LockKernel::new(None, None)) }
+    pub fn new_root_builder() -> GLockBuilder {
+        GLockBuilder { kernel: LockKernelRc::new(LockKernel::new(None, None)) }
     }
 
-    pub fn new_child_builder(&self) -> LockResult<LockBuilder> {
+    pub fn new_child_builder(&self) -> LockResult<GLockBuilder> {
         self.kernel
             .new_child()
-            .map(|child_kernel| LockBuilder { kernel: child_kernel })
+            .map(|child_kernel| GLockBuilder { kernel: child_kernel })
     }
 
-    pub fn new_child<T>(&self, data: T) -> LockResult<Lock<T>> {
+    pub fn new_child<T>(&self, data: T) -> LockResult<GLock<T>> {
         self.new_child_builder().and_then(|cb| cb.build(data))
     }
 
-    pub fn build<T>(self, data: T) -> LockResult<Lock<T>> {
+    pub fn build<T>(self, data: T) -> LockResult<GLock<T>> {
         self.kernel.own()
-            .map(|_| Lock {
+            .map(|_| GLock {
                 kernel: self.kernel,
                 data,
             })
@@ -36,67 +36,67 @@ impl LockBuilder {
 }
 
 
-pub struct Lock< T> {
+pub struct GLock< T> {
     kernel: LockKernelRc,
     data: T,
 }
 
-impl< T> Lock<T> {
+impl< T> GLock<T> {
 
-    pub fn new_root_builder() -> LockBuilder { LockBuilder::new_root_builder() }
+    pub fn new_root_builder() -> GLockBuilder { GLockBuilder::new_root_builder() }
 
-    pub fn new_root(data: T) -> LockResult<Lock<T>> { LockBuilder::new_root_builder().build(data) }
+    pub fn new_root(data: T) -> LockResult<GLock<T>> { GLockBuilder::new_root_builder().build(data) }
 
-    pub fn new_child_builder(&self) -> LockResult<LockBuilder> {
+    pub fn new_child_builder(&self) -> LockResult<GLockBuilder> {
         self.kernel
             .new_child()
-            .map(|child_kernel| LockBuilder { kernel: child_kernel })
+            .map(|child_kernel| GLockBuilder { kernel: child_kernel })
     }
 
-    pub fn new_child<T2>(&self, data: T2) -> LockResult<Lock<T2>> {
+    pub fn new_child<T2>(&self, data: T2) -> LockResult<GLock<T2>> {
         self.new_child_builder().and_then(|cb| cb.build(data))
     }
 
-    pub fn lock(&self, lock_type: LockType) -> LockResult<LockGuard<T>> {
+    pub fn lock(&self, lock_type: LockType) -> LockResult<GLockGuard<T>> {
         self.do_lock::<()>(lock_type, None, false)
     }
 
-    pub fn try_lock(&self, lock_type: LockType) -> LockResult<LockGuard<T>> {
+    pub fn try_lock(&self, lock_type: LockType) -> LockResult<GLockGuard<T>> {
         self.do_lock::<()>(lock_type, None, true)
     }
 
-    pub fn lock_using_parent<T2>(&self, lock_type: LockType, parent: &LockGuard<T2>) -> LockResult<LockGuard<T>> {
+    pub fn lock_using_parent<T2>(&self, lock_type: LockType, parent: &GLockGuard<T2>) -> LockResult<GLockGuard<T>> {
         self.do_lock(lock_type, Some(parent), false)
     }
 
-    pub fn try_lock_using_parent<T2>(&self, lock_type: LockType, parent: &LockGuard<T2>) -> LockResult<LockGuard<T>> {
+    pub fn try_lock_using_parent<T2>(&self, lock_type: LockType, parent: &GLockGuard<T2>) -> LockResult<GLockGuard<T>> {
         self.do_lock(lock_type, Some(parent), true)
     }
 
-    pub fn lock_exclusive(&self) -> LockResult<LockGuardMut<T>> {
+    pub fn lock_exclusive(&self) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive::<()>(None, false)
     }
 
-    pub fn try_lock_exclusive(&self) -> LockResult<LockGuardMut<T>> {
+    pub fn try_lock_exclusive(&self) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive::<()>(None, true)
     }
 
-    pub fn lock_exclusive_using_parent<T2>(&self, parent: &LockGuard<T2>) -> LockResult<LockGuardMut<T>> {
+    pub fn lock_exclusive_using_parent<T2>(&self, parent: &GLockGuard<T2>) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive(Some(parent), false)
     }
 
-    pub fn try_lock_exclusive_using_parent<T2>(&self, parent: &LockGuard<T2>) -> LockResult<LockGuardMut<T>> {
+    pub fn try_lock_exclusive_using_parent<T2>(&self, parent: &GLockGuard<T2>) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive(Some(parent), true)
     }
 
-    fn do_lock<T2>(&self, lock_type: LockType, parent: Option<&LockGuard<T2>>, try_only: bool) -> LockResult<LockGuard<T>> {
+    fn do_lock<T2>(&self, lock_type: LockType, parent: Option<&GLockGuard<T2>>, try_only: bool) -> LockResult<GLockGuard<T>> {
         self.kernel
             .acquire(lock_type, parent.map(|p| p.lock_instance.clone()), true, try_only)
-            .map(|lock_instance| LockGuard { lock: self, lock_instance })
+            .map(|lock_instance| GLockGuard { lock: self, lock_instance })
     }
 
-    fn do_lock_exclusive<T2>(&self, parent: Option<&LockGuard<T2>>, try_only: bool) -> LockResult<LockGuardMut<T>> {
-        self.do_lock(LockType::Exclusive, parent, try_only).map(|lg| LockGuardMut { lock_guard: lg })
+    fn do_lock_exclusive<T2>(&self, parent: Option<&GLockGuard<T2>>, try_only: bool) -> LockResult<GLockGuardMut<T>> {
+        self.do_lock(LockType::Exclusive, parent, try_only).map(|lg| GLockGuardMut { lock_guard: lg })
     }
 
     fn data_ptr(&self) -> *mut T {
@@ -104,7 +104,7 @@ impl< T> Lock<T> {
     }
 }
 
-impl< T> Drop for Lock<T> {
+impl< T> Drop for GLock<T> {
     fn drop(&mut self) {
         self.kernel
             .unown()
@@ -113,12 +113,12 @@ impl< T> Drop for Lock<T> {
 }
 
 
-pub struct LockGuard<'lck, T: 'lck> {
-    lock: &'lck Lock<T>,
+pub struct GLockGuard<'lck, T: 'lck> {
+    lock: &'lck GLock<T>,
     lock_instance: Arc<LockInstance>,
 }
 
-impl<'lck, T: 'lck> LockGuard<'lck, T> {
+impl<'lck, T: 'lck> GLockGuard<'lck, T> {
 
     pub fn lock_type(&self) -> LockResult<LockType> {
         self.lock_instance.lock_type()
@@ -133,7 +133,7 @@ impl<'lck, T: 'lck> LockGuard<'lck, T> {
     }
 }
 
-impl<'lck, T: 'lck> Deref for LockGuard<'lck, T> {
+impl<'lck, T: 'lck> Deref for GLockGuard<'lck, T> {
     type Target = T;
 
     fn deref(&self) -> &<Self as Deref>::Target {
@@ -142,22 +142,22 @@ impl<'lck, T: 'lck> Deref for LockGuard<'lck, T> {
 }
 
 
-pub struct LockGuardMut<'lck, T: 'lck> {
-    lock_guard: LockGuard<'lck, T>,
+pub struct GLockGuardMut<'lck, T: 'lck> {
+    lock_guard: GLockGuard<'lck, T>,
 }
 
-impl<'lck, T: 'lck> LockGuardMut<'lck, T> {
+impl<'lck, T: 'lck> GLockGuardMut<'lck, T> {
     pub fn lock_type(&self) -> LockResult<LockType> { self.lock_guard.lock_type() }
     pub fn upgrade(&self, to_type: LockType) -> LockResult<()> { self.lock_guard.upgrade(to_type) }
     pub fn try_upgrade(&self, to_type: LockType) -> LockResult<()> { self.lock_guard.try_upgrade(to_type) }
 }
 
-impl<'lck, T: 'lck> Deref for LockGuardMut<'lck, T> {
+impl<'lck, T: 'lck> Deref for GLockGuardMut<'lck, T> {
     type Target = T;
     fn deref(&self) -> &<Self as Deref>::Target { self.lock_guard.deref() }
 }
 
-impl<'lck, T: 'lck> DerefMut for LockGuardMut<'lck, T> {
+impl<'lck, T: 'lck> DerefMut for GLockGuardMut<'lck, T> {
     fn deref_mut(&mut self) -> &mut <Self as Deref>::Target {
         unsafe { &mut *self.lock_guard.lock.data_ptr() }
     }
@@ -170,7 +170,7 @@ mod test {
 
     #[test]
     fn non_nested_locks() {
-        let p = Lock::new_root(0u32).unwrap();
+        let p = GLock::new_root(0u32).unwrap();
 
         let c1 = p.new_child(0u32).unwrap();
         let c2 = p.new_child(0u32).unwrap();
@@ -200,12 +200,12 @@ mod test {
     fn nested_locks() {
 
         struct Parent {
-            child1: Lock<u32>,
-            child2: Lock<u32>,
+            child1: GLock<u32>,
+            child2: GLock<u32>,
         };
 
         let parent_lock = {
-            let parent_lb = Lock::<Parent>::new_root_builder();
+            let parent_lb = GLock::<Parent>::new_root_builder();
 
             let parent = Parent {
                 child1: parent_lb.new_child(0u32).unwrap(),
