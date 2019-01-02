@@ -1,28 +1,29 @@
-use std::hash::Hash;
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::fmt::{ Display, Debug };
 use std::sync::{ Arc, Weak, Mutex, MutexGuard, Condvar };
 
 use self::super::common::*;
 use self::super::locktype::*;
 
-pub struct LockKernel<I: Clone + Eq + Hash + Display + Debug> {
-    id: Option<I>,
-    parent: Option<LockKernelRc<I>>,
+pub type Id = u64;
+
+pub struct LockKernel {
+    id: Option<Id>,
+    parent: Option<LockKernelRc>,
     condvar: Condvar,
-    state: Mutex<LockKernelState<I>>,
+    state: Mutex<LockKernelState>,
 }
 
-struct LockKernelState<I: Clone + Eq + Hash + Display + Debug> {
+struct LockKernelState {
     owned: bool,
     counts: [usize; LOCK_TYPE_COUNT],
-    children: HashMap<I, Weak<LockKernel<I>>>,
+    children: HashMap<Id, Weak<LockKernel>>,
+    children_counter: Id,
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> LockKernel<I> {
+impl LockKernel {
 
-    pub fn new(id: Option<I>, parent: Option<LockKernelRc<I>>) -> LockKernel<I> {
+    pub fn new(id: Option<Id>, parent: Option<LockKernelRc>) -> LockKernel {
         LockKernel {
             id,
             parent,
@@ -31,38 +32,26 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernel<I> {
                 owned: false,
                 counts: LOCK_EMPTY_COUNTS,
                 children: HashMap::new(),
+                children_counter: 0,
             }),
         }
     }
 
-    fn lock_state<'slf: 'mg, 'mg>(&'slf self) -> LockResult<I, MutexGuard<'mg, LockKernelState<I>>> {
+    fn lock_state<'slf: 'mg, 'mg>(&'slf self) -> LockResult<MutexGuard<'mg, LockKernelState>> {
         self.state
             .lock()
             .map_err(map_unknown_err)
     }
 
-    fn dropping(&self, id: &I) {
+    fn dropping(&self, id: &Id) {
         self.lock_state()
             .map(|mut state| state.children.remove(id))
             .unwrap();
     }
 
-    pub fn id(&self) -> Option<I> { self.id.clone() }
-
-    pub fn path(&self) -> LockPath<I> {
-        let mut path = self.parent
-            .as_ref()
-            .map(|p| p.path())
-            .unwrap_or_else(|| LockPath::new());
-
-        self.id().map(|id| path.add(id.clone()));
-
-        path
-    }
-
-    pub fn own(&self) -> LockResult<I, ()> {
+    pub fn own(&self) -> LockResult<()> {
         self.lock_state().and_then(|mut state| {
-            if state.owned { Err(LockError::LockAlreadyUsed { path: self.path() }) }
+            if state.owned { Err(LockError::LockAlreadyUsed) }
             else {
                 state.owned = true;
                 Ok(())
@@ -70,12 +59,12 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernel<I> {
         })
     }
 
-    pub fn unown(&self) -> LockResult<I, ()> {
+    pub fn unown(&self) -> LockResult<()> {
         self.lock_state().map(|mut state| { state.owned = false; })
     }
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> Drop for LockKernel<I> {
+impl Drop for LockKernel {
     fn drop(&mut self) {
         if self.id.is_some() && self.parent.is_some() {
             self.parent.as_ref().unwrap().dropping(self.id.as_ref().unwrap());
@@ -84,13 +73,13 @@ impl<I: Clone + Eq + Hash + Display + Debug> Drop for LockKernel<I> {
 }
 
 
-pub struct LockKernelRc<I: Clone + Eq + Hash + Display + Debug> {
-    kernel: Arc<LockKernel<I>>,
+pub struct LockKernelRc {
+    kernel: Arc<LockKernel>,
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
+impl LockKernelRc {
 
-    pub fn new(kernel: LockKernel<I>) -> LockKernelRc<I> {
+    pub fn new(kernel: LockKernel) -> LockKernelRc {
         LockKernelRc {
             kernel: Arc::new(kernel),
         }
@@ -100,27 +89,24 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
         Arc::ptr_eq(&self.kernel, &other.kernel)
     }
 
-    pub fn get_or_create_child(&self, id: I) -> LockResult<I, LockKernelRc<I>> {
+    pub fn new_child(&self) -> LockResult<LockKernelRc> {
         self.kernel
             .lock_state()
             .map(|mut state| {
-                state.children
-                    .get(&id)
-                    .and_then(|child_ptr| child_ptr.upgrade())
-                    .map(|kernel| LockKernelRc { kernel })
-                    .unwrap_or_else(|| {
-                        let kernel = LockKernelRc::new(LockKernel::new(Some(id.clone()), Some(self.clone())));
-                        state.children.insert(id, kernel.clone_weak());
-                        kernel
-                    })
+                let id = state.children_counter;
+                state.children_counter += 1;
+
+                let kernel = LockKernelRc::new(LockKernel::new(Some(id), Some(self.clone())));
+                state.children.insert(id, kernel.clone_weak());
+                kernel
             })
     }
 
-    pub fn clone_weak(&self) -> Weak<LockKernel<I>> {
+    pub fn clone_weak(&self) -> Weak<LockKernel> {
         Arc::downgrade(&self.kernel)
     }
 
-    pub fn acquire(&self, lock_type: LockType, using_parent: Option<Arc<LockInstance<I>>>, auto_upgrade: bool, try_only: bool) -> LockResult<I, Arc<LockInstance<I>>> {
+    pub fn acquire(&self, lock_type: LockType, using_parent: Option<Arc<LockInstance>>, auto_upgrade: bool, try_only: bool) -> LockResult<Arc<LockInstance>> {
 
         let parent_instance = self.ensure_parent_lock(lock_type, using_parent, auto_upgrade, try_only)?;
 
@@ -139,7 +125,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
                     }
 
                     if !ready {
-                        if try_only { return Err(LockError::LockBusy { path: self.path() }); }
+                        if try_only { return Err(LockError::LockBusy); }
                         else { state = self.condvar.wait(state).map_err(map_unknown_err)?; }
                     }
                 }
@@ -150,7 +136,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
             })
     }
 
-    fn release(&self, lock_type: LockType) -> LockResult<I, ()> {
+    fn release(&self, lock_type: LockType) -> LockResult<()> {
         self.lock_state()
             .map(|mut state| {
                 state.counts[lock_type.index()] -= 1;
@@ -158,7 +144,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
             })
     }
 
-    fn upgrade(&self, from_type: LockType, to_type: LockType, using_parent: Option<Arc<LockInstance<I>>>, auto_upgrade: bool, try_only: bool) -> LockResult<I, ()> {
+    fn upgrade(&self, from_type: LockType, to_type: LockType, using_parent: Option<Arc<LockInstance>>, auto_upgrade: bool, try_only: bool) -> LockResult<()> {
 
         if from_type == to_type { return Ok(()); }
 
@@ -185,7 +171,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
                     }
 
                     if !ready {
-                        if try_only { return Err(LockError::LockBusy { path: self.path() }); }
+                        if try_only { return Err(LockError::LockBusy); }
                         else { state = self.condvar.wait(state).map_err(map_unknown_err)?; }
                     }
                 }
@@ -197,12 +183,12 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
             })
     }
 
-    fn ensure_parent_lock(&self, lock_type: LockType, using_parent: Option<Arc<LockInstance<I>>>, auto_upgrade: bool, try_only: bool) -> LockResult<I, Option<Arc<LockInstance<I>>>> {
+    fn ensure_parent_lock(&self, lock_type: LockType, using_parent: Option<Arc<LockInstance>>, auto_upgrade: bool, try_only: bool) -> LockResult<Option<Arc<LockInstance>>> {
         match self.parent.as_ref() {
             Some(parent) => {
                 match using_parent {
                     Some(p) => {
-                        if !parent.ptr_eq(&p.kernel) { return Err(LockError::InvalidParentLock { expected_path: parent.path(), actual_path: p.kernel.path() }); }
+                        if !parent.ptr_eq(&p.kernel) { return Err(LockError::InvalidParentLock); }
 
                         let required_parent_lock_type = lock_type.implicit_parent_type();
                         let actual_parent_lock_type = p.lock_state()?.lock_type;
@@ -212,7 +198,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
                                 let upgrade_type = actual_parent_lock_type.min_upgradable(required_parent_lock_type);
                                 p.upgrade(upgrade_type, auto_upgrade, try_only)?;
                             } else {
-                                return Err(LockError::InvalidParentLockType { path: p.kernel.path(), required: required_parent_lock_type, actual: actual_parent_lock_type });
+                                return Err(LockError::InvalidParentLockType { required: required_parent_lock_type, actual: actual_parent_lock_type });
                             }
 
                         } else if required_parent_lock_type.index() < actual_parent_lock_type.index() {
@@ -221,7 +207,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
                                     let upgrade_type = required_parent_lock_type.min_upgradable(actual_parent_lock_type);
                                     p.upgrade(upgrade_type, auto_upgrade, try_only)?;
                                 } else {
-                                    return Err(LockError::InvalidParentLockType { path: p.kernel.path(), required: required_parent_lock_type, actual: actual_parent_lock_type });
+                                    return Err(LockError::InvalidParentLockType { required: required_parent_lock_type, actual: actual_parent_lock_type });
                                 }
                             }
                         }
@@ -240,21 +226,21 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockKernelRc<I> {
     }
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> Deref for LockKernelRc<I> {
-    type Target = LockKernel<I>;
+impl Deref for LockKernelRc {
+    type Target = LockKernel;
     fn deref(&self) -> &<Self as Deref>::Target { self.kernel.deref() }
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> Clone for LockKernelRc<I> {
+impl Clone for LockKernelRc {
     fn clone(&self) -> Self {
         LockKernelRc { kernel: self.kernel.clone() }
     }
 }
 
 
-pub struct LockInstance<I: Clone + Eq + Hash + Display + Debug> {
-    kernel: LockKernelRc<I>,
-    parent: Option<Arc<LockInstance<I>>>,
+pub struct LockInstance {
+    kernel: LockKernelRc,
+    parent: Option<Arc<LockInstance>>,
     state: Mutex<LockInstanceState>,
 }
 
@@ -262,9 +248,9 @@ struct LockInstanceState {
     lock_type: LockType,
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> LockInstance<I> {
+impl LockInstance {
 
-    fn new(kernel: LockKernelRc<I>, parent: Option<Arc<LockInstance<I>>>, lock_type: LockType) -> Arc<LockInstance<I>> {
+    fn new(kernel: LockKernelRc, parent: Option<Arc<LockInstance>>, lock_type: LockType) -> Arc<LockInstance> {
 
         Arc::new(LockInstance {
             kernel,
@@ -273,17 +259,17 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockInstance<I> {
         })
     }
 
-    fn lock_state<'slf: 'mg, 'mg>(&'slf self) -> LockResult<I, MutexGuard<'mg, LockInstanceState>> {
+    fn lock_state<'slf: 'mg, 'mg>(&'slf self) -> LockResult<MutexGuard<'mg, LockInstanceState>> {
         self.state
             .lock()
             .map_err(map_unknown_err)
     }
 
-    pub fn lock_type(&self) -> LockResult<I, LockType> {
+    pub fn lock_type(&self) -> LockResult<LockType> {
         self.lock_state().map(|state| state.lock_type)
     }
 
-    pub fn upgrade(&self, to_type: LockType, auto_upgrade: bool, try_only: bool) -> LockResult<I, ()> {
+    pub fn upgrade(&self, to_type: LockType, auto_upgrade: bool, try_only: bool) -> LockResult<()> {
         self.lock_state()
             .and_then(|mut state| {
                 self.kernel.upgrade(state.lock_type, to_type, self.parent.clone(), auto_upgrade, try_only)?;
@@ -293,7 +279,7 @@ impl<I: Clone + Eq + Hash + Display + Debug> LockInstance<I> {
     }
 }
 
-impl<I: Clone + Eq + Hash + Display + Debug> Drop for LockInstance<I> {
+impl Drop for LockInstance {
     fn drop(&mut self) {
         self.lock_state()
             .and_then(|state| self.kernel.release(state.lock_type))
@@ -306,69 +292,19 @@ mod test {
     use super::*;
 
     #[test]
-    fn id_path() {
-        let k = LockKernelRc::new(LockKernel::new(None, None));
-
-        let k1 = k.get_or_create_child("1".to_string()).unwrap();
-
-        let k1a = k1.get_or_create_child("a".to_string()).unwrap();
-        let k1b = k1.get_or_create_child("b".to_string()).unwrap();
-
-        let k2 = k.get_or_create_child("2".to_string()).unwrap();
-
-        let k2a = k2.get_or_create_child("a".to_string()).unwrap();
-        let k2b = k2.get_or_create_child("b".to_string()).unwrap();
-
-        assert_eq!(k.id(), None);
-        assert_eq!(k.path(), LockPath::new());
-
-        assert_eq!(k1.id(), Some("1".to_string()));
-        assert_eq!(k1.path(), LockPath::builder().add("1".to_string()).build());
-
-        assert_eq!(k1a.id(), Some("a".to_string()));
-        assert_eq!(k1a.path(), LockPath::builder().add("1".to_string()).add("a".to_string()).build());
-
-        assert_eq!(k1b.id(), Some("b".to_string()));
-        assert_eq!(k1b.path(), LockPath::builder().add("1".to_string()).add("b".to_string()).build());
-
-        assert_eq!(k2.id(), Some("2".to_string()));
-        assert_eq!(k2.path(), LockPath::builder().add("2".to_string()).build());
-
-        assert_eq!(k2a.id(), Some("a".to_string()));
-        assert_eq!(k2a.path(), LockPath::builder().add("2".to_string()).add("a".to_string()).build());
-
-        assert_eq!(k2b.id(), Some("b".to_string()));
-        assert_eq!(k2b.path(), LockPath::builder().add("2".to_string()).add("b".to_string()).build());
-    }
-
-    #[test]
     fn own_unown() {
-        let kernel = LockKernel::<String>::new(None, None);
+        let kernel = LockKernel::new(None, None);
 
         assert_eq!(kernel.own(), Ok(()));
-        assert_eq!(kernel.own(), Err(LockError::LockAlreadyUsed { path: kernel.path() }));
+        assert_eq!(kernel.own(), Err(LockError::LockAlreadyUsed));
 
         assert_eq!(kernel.unown(), Ok(()));
 
         assert_eq!(kernel.own(), Ok(()));
-        assert_eq!(kernel.own(), Err(LockError::LockAlreadyUsed { path: kernel.path() }));
+        assert_eq!(kernel.own(), Err(LockError::LockAlreadyUsed));
 
         assert_eq!(kernel.unown(), Ok(()));
         assert_eq!(kernel.unown(), Ok(()));
-    }
-
-    #[test]
-    fn ptr_eq() {
-        let k1 = LockKernelRc::new(LockKernel::new(None, None));
-        let k2 = LockKernelRc::new(LockKernel::new(None, None));
-
-        assert_eq!(k1.ptr_eq(&k2), false);
-        assert_eq!(k1.ptr_eq(&k1), true);
-
-        let k1a = k1.get_or_create_child("a".to_string()).unwrap();
-        let k1a2 = k1.get_or_create_child("a".to_string()).unwrap();
-
-        assert_eq!(k1a.ptr_eq(&k1a2), true);
     }
 
     #[test]
@@ -389,7 +325,7 @@ mod test {
         assert_eq!(Arc::weak_count(&k.kernel), 1);
 
         {
-            let k_child = k.get_or_create_child("1".to_string()).unwrap();
+            let k_child = k.new_child().unwrap();
 
             assert_eq!(Arc::strong_count(&k.kernel), 3);
             assert_eq!(Arc::weak_count(&k.kernel), 1);
@@ -407,7 +343,7 @@ mod test {
         for t1 in LockType::lock_types().iter() {
             for t2 in LockType::lock_types().iter() {
                 let should_succeed = t1.compatible_with(*t2);
-                let k = LockKernelRc::<String>::new(LockKernel::new(None, None));
+                let k = LockKernelRc::new(LockKernel::new(None, None));
 
                 {
                     let _t1_lock = k.acquire(*t1, None, true, true).unwrap();
@@ -427,7 +363,7 @@ mod test {
             for t2 in LockType::lock_types().iter() {
                 let should_succeed = t1.implicit_parent_type().compatible_with(*t2);
                 let k = LockKernelRc::new(LockKernel::new(None, None));
-                let k1 = k.get_or_create_child("1".to_string()).unwrap();
+                let k1 = k.new_child().unwrap();
 
                 {
                     let _t1_lock = k1.acquire(*t1, None, true, true).unwrap();
@@ -448,8 +384,8 @@ mod test {
                 for t1b in LockType::lock_types().iter() {
                     for t2 in LockType::lock_types().iter() {
                         let k = LockKernelRc::new(LockKernel::new(None, None));
-                        let k1 = k.get_or_create_child("1".to_string()).unwrap();
-                        let k2 = k.get_or_create_child("2".to_string()).unwrap();
+                        let k1 = k.new_child().unwrap();
+                        let k2 = k.new_child().unwrap();
 
                         let p_lock = k.acquire(*parent_type, None, true, true).unwrap();
                         let _l1a = k1.acquire(*t1a, Some(p_lock.clone()), true, true).unwrap();
@@ -466,7 +402,7 @@ mod test {
         for initial_type in LockType::lock_types().iter() {
             for upgrade_type in LockType::lock_types().iter() {
                 let should_upgrade_succeed = initial_type.upgradable_to(*upgrade_type);
-                let k = LockKernelRc::new(LockKernel::<String>::new(None, None));
+                let k = LockKernelRc::new(LockKernel::new(None, None));
 
                 let l1 = k.acquire(*initial_type, None, true, true).unwrap();
 
@@ -496,8 +432,8 @@ mod test {
         for initial_type in LockType::lock_types().iter() {
             for upgrade_type in LockType::lock_types().iter() {
                 let should_upgrade_succeed = initial_type.upgradable_to(*upgrade_type);
-                let k = LockKernelRc::new(LockKernel::<String>::new(None, None));
-                let k1 = k.get_or_create_child("1".to_string()).unwrap();
+                let k = LockKernelRc::new(LockKernel::new(None, None));
+                let k1 = k.new_child().unwrap();
 
                 let l1 = k1.acquire(*initial_type, None, true, true).unwrap();
 
