@@ -1,11 +1,94 @@
 use std::fmt::{ Display, Formatter, Error as FmtError };
 
+/// The type of lock that can be acquired for a `GLock`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LockType {
+    /// Before a `Shared` lock is acquired for a child `GLock`, `IntentionShared` locks must be
+    /// acquired for each of its ancestors.
+    ///
+    /// # Compatibility
+    ///
+    /// `IntentionShared`: Yes
+    ///
+    /// `IntentionExclusive`: Yes
+    ///
+    /// `Shared`: Yes
+    ///
+    /// `SharedIntentionExclusive`: Yes
+    ///
+    /// `Exclusive`: No
+    ///
     IntentionShared,
+
+    /// Before an `Exclusive` or `SharedIntentionExclusive` lock is acquired for a child `GLock`,
+    /// `IntentionExclusive` locks must be acquired for each of its ancestors.
+    ///
+    /// # Compatibility
+    ///
+    /// `IntentionShared`: Yes
+    ///
+    /// `IntentionExclusive`: Yes
+    ///
+    /// `Shared`: No
+    ///
+    /// `SharedIntentionExclusive`: No
+    ///
+    /// `Exclusive`: No
+    ///
     IntentionExclusive,
+
+    /// A `Shared` lock grants read access to its protected data. Before acquiring a `Shared` lock for a
+    /// child `GLock`, `IntentionShared` (or more restrictive) locks must be acquired for all its ancestors.
+    ///
+    /// # Compatibility
+    ///
+    /// `IntentionShared`: Yes
+    ///
+    /// `IntentionExclusive`: No
+    ///
+    /// `Shared`: Yes
+    ///
+    /// `SharedIntentionExclusive`: No
+    ///
+    /// `Exclusive`: No
+    ///
     Shared,
+
+    /// A `SharedIntentionExclusive` lock - as the name implies - is similar to holding both a
+    /// `Shared` lock and an `IntentionExclusive` lock at the same time. Before acquiring a
+    /// `SharedIntentionExclusive` lock for a child `GLock`, `IntentionExclusive` (or more
+    /// restrictive) locks must be acquired for all its ancestors.
+    ///
+    /// # Compatibility
+    ///
+    /// `IntentionShared`: Yes
+    ///
+    /// `IntentionExclusive`: No
+    ///
+    /// `Shared`: No
+    ///
+    /// `SharedIntentionExclusive`: No
+    ///
+    /// `Exclusive`: No
+    ///
     SharedIntentionExclusive,
+
+    /// An `Exclusive` lock grants write access to its protected data. Before acquiring an
+    /// `Exclusive` lock for a child `GLock`, `IntentionExclusive` (or more restrictive) locks
+    /// must be acquired for all its ancestors.
+    ///
+    /// # Compatibility
+    ///
+    /// `IntentionShared`: No
+    ///
+    /// `IntentionExclusive`: No
+    ///
+    /// `Shared`: No
+    ///
+    /// `SharedIntentionExclusive`: No
+    ///
+    /// `Exclusive`: No
+    ///
     Exclusive,
 }
 
@@ -57,6 +140,7 @@ impl LockType {
 
     pub fn lock_types() -> &'static [LockType] { &LOCK_TYPES }
 
+    /// Returns the numeric index corresponding to this lock type.
     pub fn index(self) -> usize {
         match self {
             LockType::IntentionShared           => 0,
@@ -67,11 +151,24 @@ impl LockType {
         }
     }
 
+    /// Returns the implicit parent lock type for this lock type. This means that, before acquiring
+    /// this type of lock for a child `GLock`, locks of the implicit parent type must be acquired
+    /// for all its ancestor `GLock`s.
     pub fn implicit_parent_type(self) -> LockType { LOCK_TYPE_IMPLICIT_PARENT_TYPE[self.index()] }
+
+    /// Returns `true` if the lock type is compatible with the specified lock type, `false` otherwise.
     pub fn compatible_with(self, other_type: LockType) -> bool { LOCK_TYPE_COMPATIBLE_WITH[self.index()][other_type.index()] }
+
+    /// Returns `true` if the lock type is upgradable to the specified lock type, `false` otherwise.
     pub fn upgradable_to(self, other_type: LockType) -> bool { LOCK_TYPE_UPGRADABLE_TO[self.index()][other_type.index()] }
+
+    /// Returns `true` if the lock type can support child locks of the specified type, `false` otherwise.
+    /// If `true`, this means that if a lock of this type is acquired for a parent `GLock`, a lock
+    /// of the specified type can be acquired for a child `GLock`.
     pub fn supports_children(self, other_type: LockType) -> bool { LOCK_TYPE_SUPPORTS_CHILDREN[self.index()][other_type.index()] }
 
+    /// Returns the least restrictive lock type that this lock type can be upgraded to, that is at
+    /// least as restrictive as the specified type.
     pub fn min_upgradable(self, other_type: LockType) -> LockType {
         for lt in LOCK_TYPES.iter() {
             if self.upgradable_to(*lt) && other_type.upgradable_to(*lt) {

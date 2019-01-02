@@ -50,12 +50,8 @@ impl LockKernel {
     }
 
     pub fn own(&self) -> LockResult<()> {
-        self.lock_state().and_then(|mut state| {
-            if state.owned { Err(LockError::LockAlreadyUsed) }
-            else {
-                state.owned = true;
-                Ok(())
-            }
+        self.lock_state().map(|mut state| {
+            state.owned = true;
         })
     }
 
@@ -290,22 +286,6 @@ impl Drop for LockInstance {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn own_unown() {
-        let kernel = LockKernel::new(None, None);
-
-        assert_eq!(kernel.own(), Ok(()));
-        assert_eq!(kernel.own(), Err(LockError::LockAlreadyUsed));
-
-        assert_eq!(kernel.unown(), Ok(()));
-
-        assert_eq!(kernel.own(), Ok(()));
-        assert_eq!(kernel.own(), Err(LockError::LockAlreadyUsed));
-
-        assert_eq!(kernel.unown(), Ok(()));
-        assert_eq!(kernel.unown(), Ok(()));
-    }
 
     #[test]
     fn clone_clone_weak() {

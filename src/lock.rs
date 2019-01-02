@@ -6,26 +6,58 @@ use self::super::locktype::*;
 use self::super::kernel::*;
 
 
+/// A `GLockBuilder` can be used to construct nested `GLock`s. In Rust, inner `struct`s are
+/// initialized before their outer container `struct`s. In `glock`, parent lock kernels must be
+/// initialized before child lock kernels. To resolve this, a `GLockBuilder` can be used to
+/// initialize the parent lock kernel first, then accept the containing `struct` in `build()`.
+///
+/// # Example
+///
+///
+/// ```
+/// use glock::{ GLock, GLockBuilder };
+///
+/// struct Parent {
+///     child1: GLock<u32>,
+///     child2: GLock<u32>,
+/// }
+///
+/// let parent_lock = {
+///
+///     let parent_lock_builder = GLockBuilder::new_root_builder();
+///
+///     let parent = Parent {
+///         child1: parent_lock_builder.new_child(0u32).unwrap(),
+///         child2: parent_lock_builder.new_child(0u32).unwrap(),
+///     };
+///
+///     parent_lock_builder.build(parent).unwrap()
+/// };
+/// ```
 pub struct GLockBuilder {
     kernel: LockKernelRc,
 }
 
 impl GLockBuilder {
 
+    /// Creates a new root `GLock` builder
     pub fn new_root_builder() -> GLockBuilder {
         GLockBuilder { kernel: LockKernelRc::new(LockKernel::new(None, None)) }
     }
 
+    /// Creates a builder for a `GLock` that is a child of the current `GLock`.
     pub fn new_child_builder(&self) -> LockResult<GLockBuilder> {
         self.kernel
             .new_child()
             .map(|child_kernel| GLockBuilder { kernel: child_kernel })
     }
 
+    /// Creates a new `Glock` that is a child of the current `GLock` and protects the specified.
     pub fn new_child<T>(&self, data: T) -> LockResult<GLock<T>> {
         self.new_child_builder().and_then(|cb| cb.build(data))
     }
 
+    /// Builds the `GLock` object that protects the specified `data`.
     pub fn build<T>(self, data: T) -> LockResult<GLock<T>> {
         self.kernel.own()
             .map(|_| GLock {
@@ -35,7 +67,20 @@ impl GLockBuilder {
     }
 }
 
-
+/// Represents a granular lock object. A `GLock` is used to protect a data value of type `T`, which
+/// can only be accessed with a mutable reference after calling `lock_exclusive()`,
+/// `try_lock_exclusive()`, `lock_exclusive_using_parent()` or `try_lock_exclusive_using_parent()`.
+///
+/// Each `GLock` can have zero or more child `GLock`s, which can be nested (i.e. placed inside the
+/// protected data) or non-nested. The same locking rules apply in both cases.
+///
+/// When locking a child `GLock`, first you need to lock its parent `GLock`, then lock it by calling
+/// `lock_using_parent()`, `try_lock_using_parent()`, `lock_exclusive_using_parent()` or
+/// `lock_exclusive_using_parent()`, and passing a reference to the parent's `GLockGuard`.
+///
+/// If you do not lock the parent and proceed to lock the child `GLock` directly using `lock()`,
+/// `try_lock()`, `lock_exclusive()` or `try_lock_exclusive()`, an implicit lock will be acquired
+/// for the parent `GLock` that will be release when dropping this lock's `GLockGuard`.
 pub struct GLock< T> {
     kernel: LockKernelRc,
     data: T,
@@ -43,48 +88,96 @@ pub struct GLock< T> {
 
 impl< T> GLock<T> {
 
+    /// Creates a new root `GLockBuilder`. This is similar to calling `GLockBuilder::new_root_builder()`.
     pub fn new_root_builder() -> GLockBuilder { GLockBuilder::new_root_builder() }
 
+    /// Creates a new root `GLock` protecting the specified data.
     pub fn new_root(data: T) -> LockResult<GLock<T>> { GLockBuilder::new_root_builder().build(data) }
 
+    /// Creates a `GLockBuilder` for a lock that is a child of the current `GLock`.
     pub fn new_child_builder(&self) -> LockResult<GLockBuilder> {
         self.kernel
             .new_child()
             .map(|child_kernel| GLockBuilder { kernel: child_kernel })
     }
 
+    /// Creates a `GLock` that is a child of the current `GLock`, protecting the specified data.
     pub fn new_child<T2>(&self, data: T2) -> LockResult<GLock<T2>> {
         self.new_child_builder().and_then(|cb| cb.build(data))
     }
 
+    /// Acquires a lock of the specified type on the current `GLock`. If the lock is busy, it will
+    /// block until it is ready. If this is a child `GLock`, it will implicitly acquire the
+    /// appropriate lock on its parent `GLock`.
+    /// 
+    /// If you are trying to acquire an `Exclusive` lock, it is better to use `lock_exclusive()`,
+    /// because the `GLockGuard` returned by `lock()` will not allow mutation of protected data.
     pub fn lock(&self, lock_type: LockType) -> LockResult<GLockGuard<T>> {
         self.do_lock::<()>(lock_type, None, false)
     }
 
+    /// Attempts to acquire a lock of the specified type on the current `GLock`. If the lock is busy,
+    /// it will return a `LockError::LockBusy` error. If this is a child `GLock`, it will implicitly
+    /// attempt to acquire the appropriate lock on its parent `GLock`.
+    /// 
+    /// If you are trying to acquire an `Exclusive` lock, it is better to use `try_lock_exclusive()`,
+    /// because the `GLockGuard` returned by `try_lock()` will not allow mutation of protected data.
     pub fn try_lock(&self, lock_type: LockType) -> LockResult<GLockGuard<T>> {
         self.do_lock::<()>(lock_type, None, true)
     }
 
+    /// Acquires a lock of the specified type on the current child `GLock`, using the specified
+    /// `GLockGuard` of the parent `GLock`. If the lock is busy, it will block until it is ready.
+    /// 
+    /// If you are trying to acquire an `Exclusive` lock, it is better to use
+    /// `lock_exclusive_using_parent()`, because the `GLockGuard` returned by
+    /// `lock_using_parent()` will not allow mutation of protected data.
     pub fn lock_using_parent<T2>(&self, lock_type: LockType, parent: &GLockGuard<T2>) -> LockResult<GLockGuard<T>> {
         self.do_lock(lock_type, Some(parent), false)
     }
 
+    /// Attempts to acquire a lock of the specified type on the current child `GLock`, using the
+    /// specified `GLockGuard` of the parent `GLock`. If the lock is busy, it will return a
+    /// `LockError::LockBusy` error.
+    /// 
+    /// If you are trying to acquire an `Exclusive` lock, it is better to use
+    /// `try_lock_exclusive_using_parent()`, because the `GLockGuard` returned by
+    /// `try_lock_using_parent()` will not allow mutation of protected data.
     pub fn try_lock_using_parent<T2>(&self, lock_type: LockType, parent: &GLockGuard<T2>) -> LockResult<GLockGuard<T>> {
         self.do_lock(lock_type, Some(parent), true)
     }
 
+    /// Acquires an `Exclusive` lock on the current `GLock`. If the lock is busy, it will block
+    /// until it is ready. If this is a child `GLock`, it will implicitly acquire the appropriate
+    /// lock on its parent `GLock`.
+    ///
+    /// The returned `GLockGuardMut` allows mutating the protected data.
     pub fn lock_exclusive(&self) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive::<()>(None, false)
     }
 
+    /// Attempts to acquire an `Exclusive` lock on the current `GLock`. If the lock is busy,
+    /// it will return a `LockError::LockBusy` error. If this is a child `GLock`, it will implicitly
+    /// attempt to acquire the appropriate lock on its parent `GLock`.
+    ///
+    /// The returned `GLockGuardMut` allows mutating the protected data.
     pub fn try_lock_exclusive(&self) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive::<()>(None, true)
     }
 
+    /// Acquires an `Exclusive` lock on the current child `GLock`, using the specified `GLockGuard`
+    /// of the parent `GLock`. If the lock is busy, it will block until it is ready.
+    ///
+    /// The returned `GLockGuardMut` allows mutating the protected data.
     pub fn lock_exclusive_using_parent<T2>(&self, parent: &GLockGuard<T2>) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive(Some(parent), false)
     }
 
+    /// Attempts to acquire an `Exclusive` lock on the current child `GLock`, using the
+    /// specified `GLockGuard` of the parent `GLock`. If the lock is busy, it will return a
+    /// `LockError::LockBusy` error.
+    ///
+    /// The returned `GLockGuardMut` allows mutating the protected data.
     pub fn try_lock_exclusive_using_parent<T2>(&self, parent: &GLockGuard<T2>) -> LockResult<GLockGuardMut<T>> {
         self.do_lock_exclusive(Some(parent), true)
     }
@@ -113,6 +206,8 @@ impl< T> Drop for GLock<T> {
 }
 
 
+/// A `GLockGuard` represents an acquired lock instance of any type. It can be used to access the
+/// protected data. The lock is released by dropping the `GLockGuard` object.
 pub struct GLockGuard<'lck, T: 'lck> {
     lock: &'lck GLock<T>,
     lock_instance: Arc<LockInstance>,
@@ -120,14 +215,21 @@ pub struct GLockGuard<'lck, T: 'lck> {
 
 impl<'lck, T: 'lck> GLockGuard<'lck, T> {
 
+    /// Returns the type of the lock currently held.
     pub fn lock_type(&self) -> LockResult<LockType> {
         self.lock_instance.lock_type()
     }
 
+    /// Upgrades the type of this `GLockGuard` to the specified type. If parent lock does not support
+    /// the new type, it will be upgraded as well. If the lock is currently busy, it will block until
+    /// it is ready.
     pub fn upgrade(&self, to_type: LockType) -> LockResult<()> {
         self.lock_instance.upgrade(to_type, true, false)
     }
 
+    /// Attempts to upgrade the type of this `GLockGuard` to the specified type. If parent lock
+    /// does not support the new type, it will be upgraded as well. If the lock is currently busy,
+    /// it will return a `LockError::LockBusy` error.
     pub fn try_upgrade(&self, to_type: LockType) -> LockResult<()> {
         self.lock_instance.upgrade(to_type, true, true)
     }
@@ -141,15 +243,10 @@ impl<'lck, T: 'lck> Deref for GLockGuard<'lck, T> {
     }
 }
 
-
+/// A `GLockGuard` represents an acquired `Exclusive` lock instance. It can be used to read as well
+/// as mutate  the protected data. The lock is released by dropping the `GLockGuardMut` object.
 pub struct GLockGuardMut<'lck, T: 'lck> {
     lock_guard: GLockGuard<'lck, T>,
-}
-
-impl<'lck, T: 'lck> GLockGuardMut<'lck, T> {
-    pub fn lock_type(&self) -> LockResult<LockType> { self.lock_guard.lock_type() }
-    pub fn upgrade(&self, to_type: LockType) -> LockResult<()> { self.lock_guard.upgrade(to_type) }
-    pub fn try_upgrade(&self, to_type: LockType) -> LockResult<()> { self.lock_guard.try_upgrade(to_type) }
 }
 
 impl<'lck, T: 'lck> Deref for GLockGuardMut<'lck, T> {

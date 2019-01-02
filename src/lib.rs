@@ -1,5 +1,5 @@
 //! Granular locking crate for Rust. Instead of using coarse-grained `Mutex` or `RwLock` which can be
-//! used to lock an entire structure, `glock` provides more granular locking more granular locking.
+//! used to lock an entire structure, `glock` provides more granular locking.
 //!
 //! Code is hosted on github.com:
 //!

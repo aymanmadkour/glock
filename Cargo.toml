@@ -1,6 +1,13 @@
 [package]
 name = "glock"
 version = "0.1.0"
-authors = ["ayman"]
+authors = ["Ayman Madkour <info@aymanmadkour.com>"]
+description = "Granular locking crate for Rust"
+license = "Apache-2.0"
+repository = "https://github.com/aymanmadkour/glock"
+readme = "README.md"
+keywords = ["concurrency", "locking", "granular"]
+categories = ["concurrency"]
 
 [dependencies]
+
