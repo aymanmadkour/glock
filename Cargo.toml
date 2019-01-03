@@ -1,6 +1,6 @@
 [package]
 name = "glock"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Ayman Madkour <info@aymanmadkour.com>"]
 description = "Granular locking crate for Rust"
 license = "Apache-2.0"

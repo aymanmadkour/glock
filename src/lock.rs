@@ -244,7 +244,7 @@ impl<'lck, T: 'lck> GLockGuard<'lck, T> {
     /// In case of failure, it will return a tuple containing the error as well as the original
     /// `GLockGuard`.
     pub fn upgrade_to_exclusive(self) -> Result<GLockGuardMut<'lck, T>, (LockError, GLockGuard<'lck, T>)> {
-        match self.lock_instance.upgrade(LockType::Exclusive, true, true) {
+        match self.lock_instance.upgrade(LockType::Exclusive, true, false) {
             Ok(_)   => { Ok(GLockGuardMut { lock_guard: self }) },
             Err(e)  => { Err((e, self)) },
         }
@@ -258,7 +258,7 @@ impl<'lck, T: 'lck> GLockGuard<'lck, T> {
     /// In case of failure, it will return a tuple containing the error as well as the original
     /// `GLockGuard`.
     pub fn try_upgrade_to_exclusive(self) -> Result<GLockGuardMut<'lck, T>, (LockError, GLockGuard<'lck, T>)> {
-        match self.lock_instance.upgrade(LockType::Exclusive, true, false) {
+        match self.lock_instance.upgrade(LockType::Exclusive, true, true) {
             Ok(_)   => { Ok(GLockGuardMut { lock_guard: self }) },
             Err(e)  => { Err((e, self)) },
         }
