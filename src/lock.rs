@@ -81,6 +81,7 @@ impl GLockBuilder {
 /// If you do not lock the parent and proceed to lock the child `GLock` directly using `lock()`,
 /// `try_lock()`, `lock_exclusive()` or `try_lock_exclusive()`, an implicit lock will be acquired
 /// for the parent `GLock` that will be release when dropping this lock's `GLockGuard`.
+#[derive(Debug)]
 pub struct GLock< T> {
     kernel: LockKernelRc,
     data: T,
@@ -208,6 +209,7 @@ impl< T> Drop for GLock<T> {
 
 /// A `GLockGuard` represents an acquired lock instance of any type. It can be used to access the
 /// protected data. The lock is released by dropping the `GLockGuard` object.
+#[derive(Debug)]
 pub struct GLockGuard<'lck, T: 'lck> {
     lock: &'lck GLock<T>,
     lock_instance: Arc<LockInstance>,
@@ -233,6 +235,34 @@ impl<'lck, T: 'lck> GLockGuard<'lck, T> {
     pub fn try_upgrade(&self, to_type: LockType) -> LockResult<()> {
         self.lock_instance.upgrade(to_type, true, true)
     }
+
+    /// Upgrades the type of this `GLockGuard` to `Exclusive`. If parent lock does not support
+    /// the new type, it will be upgraded as well. If the lock is currently busy, it will block until
+    /// it is ready.
+    ///
+    /// This method consumes the current `GLockGuard` and returns a new `GLockGuardMut`.
+    /// In case of failure, it will return a tuple containing the error as well as the original
+    /// `GLockGuard`.
+    pub fn upgrade_to_exclusive(self) -> Result<GLockGuardMut<'lck, T>, (LockError, GLockGuard<'lck, T>)> {
+        match self.lock_instance.upgrade(LockType::Exclusive, true, true) {
+            Ok(_)   => { Ok(GLockGuardMut { lock_guard: self }) },
+            Err(e)  => { Err((e, self)) },
+        }
+    }
+
+    /// Attempts to upgrade the type of this `GLockGuard` to `Exclusive`. If parent lock does not support
+    /// the new type, it will be upgraded as well. If the lock is currently busy, If the lock is
+    /// currently busy, it will return a `LockError::LockBusy` error.
+    ///
+    /// This method consumes the current `GLockGuard` and returns a new `GLockGuardMut`.
+    /// In case of failure, it will return a tuple containing the error as well as the original
+    /// `GLockGuard`.
+    pub fn try_upgrade_to_exclusive(self) -> Result<GLockGuardMut<'lck, T>, (LockError, GLockGuard<'lck, T>)> {
+        match self.lock_instance.upgrade(LockType::Exclusive, true, false) {
+            Ok(_)   => { Ok(GLockGuardMut { lock_guard: self }) },
+            Err(e)  => { Err((e, self)) },
+        }
+    }
 }
 
 impl<'lck, T: 'lck> Deref for GLockGuard<'lck, T> {
@@ -245,6 +275,7 @@ impl<'lck, T: 'lck> Deref for GLockGuard<'lck, T> {
 
 /// A `GLockGuard` represents an acquired `Exclusive` lock instance. It can be used to read as well
 /// as mutate  the protected data. The lock is released by dropping the `GLockGuardMut` object.
+#[derive(Debug)]
 pub struct GLockGuardMut<'lck, T: 'lck> {
     lock_guard: GLockGuard<'lck, T>,
 }
@@ -331,5 +362,22 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn upgrade_to_exclusive() {
+
+        let p = GLock::new_root(0u32).unwrap();
+
+        let c = p.new_child(0u32).unwrap();
+
+        let c_g = c.lock(LockType::Shared).unwrap();
+
+        assert_eq!(p.try_lock(LockType::Shared).is_ok(), true);
+
+        let mut c_g_mut = c_g.upgrade_to_exclusive().unwrap();
+        *c_g_mut = 10;
+
+        assert_eq!(p.try_lock(LockType::Shared).is_ok(), false);
     }
 }

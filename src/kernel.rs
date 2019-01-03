@@ -7,6 +7,7 @@ use self::super::locktype::*;
 
 pub type Id = u64;
 
+#[derive(Debug)]
 pub struct LockKernel {
     id: Option<Id>,
     parent: Option<LockKernelRc>,
@@ -14,6 +15,7 @@ pub struct LockKernel {
     state: Mutex<LockKernelState>,
 }
 
+#[derive(Debug)]
 struct LockKernelState {
     owned: bool,
     counts: [usize; LOCK_TYPE_COUNT],
@@ -69,6 +71,7 @@ impl Drop for LockKernel {
 }
 
 
+#[derive(Debug)]
 pub struct LockKernelRc {
     kernel: Arc<LockKernel>,
 }
@@ -234,12 +237,14 @@ impl Clone for LockKernelRc {
 }
 
 
+#[derive(Debug)]
 pub struct LockInstance {
     kernel: LockKernelRc,
     parent: Option<Arc<LockInstance>>,
     state: Mutex<LockInstanceState>,
 }
 
+#[derive(Debug)]
 struct LockInstanceState {
     lock_type: LockType,
 }
